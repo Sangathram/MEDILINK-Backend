@@ -366,10 +366,24 @@ public class OrderController {
                 .orElseThrow(() -> new RuntimeException("User not found"));
     }
 
+
+    
     // GET DELIVERY PARTNER PROFILE
     private DeliveryPartner getDeliveryPartner(User user) {
-        return deliveryPartnerRepository.findByEmail(user.getEmail())
+        if (user == null || user.getEmail() == null
+                || user.getEmail().isBlank()) {
+            throw new RuntimeException(
+                    "Authenticated delivery user has no email");
+        }
+
+        String email = user.getEmail().trim();
+
+        return deliveryPartnerRepository
+                .findByNormalizedEmail(email)
                 .orElseThrow(() -> new RuntimeException(
-                        "Delivery partner profile not found"));
+                        "Delivery partner profile not found. "
+                        + "Verify the production delivery-partner record."));
     }
+
+    
 }
