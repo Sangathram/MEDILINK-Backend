@@ -602,201 +602,98 @@ public class OrderService {
     // UPDATE ORDER STATUS
     // =========================================================
 
-    @Transactional
-    public Order updateOrderStatus(
-            Long id,
-            String newStatus) {
+@Transactional
+public Order updateOrderStatus(Long id, String newStatus) {
 
-        // -----------------------------------------------------
-        // Find order
-        // -----------------------------------------------------
-
-        Order order = orderRepository
-                .findById(id)
-                .orElseThrow(() ->
-                        new RuntimeException(
-                                "Order not found"
-                        )
-                );
-
-
-        // -----------------------------------------------------
-        // Check status input
-        // -----------------------------------------------------
-
-        if (newStatus == null ||
-                newStatus.isBlank()) {
-
-            throw new RuntimeException(
-                    "Order status cannot be empty"
-            );
-        }
-
-
-        // Convert status to uppercase
-        newStatus = newStatus.toUpperCase();
-
-
-        // Current status
-        String currentStatus = order.getStatus();
-
-
-        // =====================================================
-        // VALIDATE STATUS TRANSITION
-        // =====================================================
-
-        if (currentStatus.equals("PLACED")) {
-
-            if (!newStatus.equals("PROCESSING")) {
-
-                throw new RuntimeException(
-                        "PLACED order can only move to PROCESSING"
-                );
-            }
-        }
-
-        else if (currentStatus.equals("PROCESSING")) {
-
-            if (!newStatus.equals("DISPATCHED")) {
-
-                throw new RuntimeException(
-                        "PROCESSING order can only move to DISPATCHED"
-                );
-            }
-        }
-
-        else if (currentStatus.equals("DISPATCHED")) {
-
-            if (!newStatus.equals("DELIVERED")) {
-
-                throw new RuntimeException(
-                        "DISPATCHED order can only move to DELIVERED"
-                );
-            }
-        }
-
-        else if (currentStatus.equals("DELIVERED")) {
-
-            throw new RuntimeException(
-                    "DELIVERED order cannot be changed"
-            );
-        }
-
-        else {
-
-            throw new RuntimeException(
-                    "Invalid current order status"
-            );
-        }
-
-
-        // =====================================================
-        // UPDATE MAIN ORDER STATUS
-        // =====================================================
-
-        order.setStatus(newStatus);
-
-
-        // =====================================================
-        // UPDATE DELIVERY TRACKING
-        // =====================================================
-
-        if (newStatus.equals("PROCESSING")) {
-
-            order.setDeliveryStatus("PROCESSING");
-
-        }
-
-        else if (newStatus.equals("DISPATCHED")) {
-
-            order.setDeliveryStatus("OUT_FOR_DELIVERY");
-
-            order.setDispatchedAt(
-                    LocalDateTime.now()
-            );
-
-            // Demo delivery partner information.
-            // Later we can create a separate delivery-partner
-            // module and assign real delivery partners.
-
-            if (order.getDeliveryPartner() == null ||
-                    order.getDeliveryPartner().isBlank()) {
-
-                order.setDeliveryPartner(
-                        "MEDILINK Delivery Partner"
-                );
-            }
-
-            if (order.getDeliveryPhone() == null ||
-                    order.getDeliveryPhone().isBlank()) {
-
-                order.setDeliveryPhone(
-                        "Delivery contact available"
-                );
-            }
-        }
-
-        else if (newStatus.equals("DELIVERED")) {
-
-            order.setDeliveryStatus("DELIVERED");
-
-            order.setDeliveredAt(
-                    LocalDateTime.now()
-            );
-        }
-
-
-        // -----------------------------------------------------
-        // Save order
-        // -----------------------------------------------------
-
-        Order savedOrder = orderRepository.save(order);
-
-        // =====================================================
-        // CREATE STATUS NOTIFICATION
-        // =====================================================
-
-        String title;
-        String message;
-
-        if (newStatus.equals("PROCESSING")) {
-
-            title = "Order Processing";
-            message = "Your order #" +
-                    savedOrder.getId() +
-                    " is now being processed.";
-
-        } else if (newStatus.equals("DISPATCHED")) {
-
-            title = "Order Dispatched";
-            message = "Your order #" +
-                    savedOrder.getId() +
-                    " has been dispatched and is out for delivery.";
-
-        } else if (newStatus.equals("DELIVERED")) {
-
-            title = "Order Delivered";
-            message = "Your order #" +
-                    savedOrder.getId() +
-                    " has been delivered successfully.";
-
-        } else {
-
-            title = "Order Updated";
-            message = "Your order #" +
-                    savedOrder.getId() +
-                    " status is now " +
-                    newStatus + ".";
-        }
-
-        notificationService.createNotification(
-                savedOrder.getUserId(),
-                savedOrder.getId(),
-                title,
-                message,
-                "ORDER_" + newStatus
-        );
-
-        return savedOrder;
+    if (newStatus == null || newStatus.isBlank()) {
+        throw new RuntimeException("Order status cannot be empty");
     }
+
+    newStatus = newStatus.trim().toUpperCase();
+
+    
+Order order = orderRepository.findByIdForUpdate(id)
+        .orElseThrow(() -> new RuntimeException("Order not found"));
+
+
+    String currentStatus = order.getStatus();
+
+    if (currentStatus == null) {
+        throw new RuntimeException("Current order status is missing");
+    }
+
+    currentStatus = currentStatus.trim().toUpperCase();
+
+    if ("PLACED".equals(currentStatus)
+            && "PROCESSING".equals(newStatus)) {
+
+        order.setStatus("PROCESSING");
+        order.setDeliveryStatus("PROCESSING");
+        order.setPackedAt(LocalDateTime.now());
+
+    } else if ("PROCESSING".equals(currentStatus)
+            && "DISPATCHED".equals(newStatus)) {
+
+        order.setStatus("DISPATCHED");
+        order.setDeliveryStatus("OUT_FOR_DELIVERY");
+        order.setDispatchedAt(LocalDateTime.now());
+
+        if (order.getEstimatedDelivery() == null
+                || order.getEstimatedDelivery().isBlank()) {
+            order.setEstimatedDelivery(
+                    LocalDateTime.now().plusMinutes(10)
+                            .format(ESTIMATED_DATE_FORMAT));
+        }
+
+    } else if ("DISPATCHED".equals(currentStatus)
+            && "DELIVERED".equals(newStatus)) {
+
+        order.setStatus("DELIVERED");
+        order.setDeliveryStatus("DELIVERED");
+        order.setDeliveredAt(LocalDateTime.now());
+
+    } else if ("DELIVERED".equals(currentStatus)) {
+
+        throw new RuntimeException(
+                "DELIVERED order cannot be changed");
+
+    } else {
+
+        throw new RuntimeException(
+                "Invalid order status transition: "
+                        + currentStatus + " -> " + newStatus);
+    }
+
+    Order savedOrder = orderRepository.save(order);
+
+    String title;
+    String message;
+
+    if ("PROCESSING".equals(newStatus)) {
+        title = "Order Processing";
+        message = "Your order #" + savedOrder.getId()
+                + " is now being processed.";
+
+    } else if ("DISPATCHED".equals(newStatus)) {
+        title = "Order Dispatched";
+        message = "Your order #" + savedOrder.getId()
+                + " has been dispatched and is out for delivery.";
+
+    } else {
+        title = "Order Delivered";
+        message = "Your order #" + savedOrder.getId()
+                + " has been delivered successfully.";
+    }
+
+    notificationService.createNotification(
+            savedOrder.getUserId(),
+            savedOrder.getId(),
+            title,
+            message,
+            "ORDER_" + newStatus
+    );
+
+    return savedOrder;
+}
+
 }

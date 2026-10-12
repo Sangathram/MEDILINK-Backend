@@ -1,3 +1,4 @@
+
 package com.medilink.controller;
 
 import java.util.List;
@@ -21,6 +22,8 @@ import com.medilink.repository.OrderRepository;
 import com.medilink.repository.UserRepository;
 import com.medilink.service.OrderService;
 
+import jakarta.transaction.Transactional;
+
 @RestController
 @RequestMapping("/api/orders")
 public class OrderController {
@@ -42,39 +45,58 @@ public class OrderController {
         this.orderRepository = orderRepository;
     }
 
-    // =========================================================
     // PLACE SINGLE ORDER
-    // =========================================================
-
     @PostMapping
     public Order placeOrder(@RequestBody Order order) {
         return orderService.placeOrder(order);
     }
 
-    // =========================================================
     // PLACE CART ORDERS
-    // =========================================================
-
     @PostMapping("/cart")
-    public List<Order> placeCartOrders(
-            @RequestBody List<Order> orders) {
-
+    public List<Order> placeCartOrders(@RequestBody List<Order> orders) {
         return orderService.placeCartOrders(orders);
     }
 
-    // =========================================================
-    // GET ALL ORDERS
-    // ADMIN + PHARMACY ONLY
-    // =========================================================
 
-    @GetMapping
-    public List<Order> getAllOrders() {
+    // GET AVAILABLE ORDERS FOR DELIVERY PARTNERS
+    @GetMapping("/available")
+    public List<Order> getAvailableOrders() {
 
         User user = getLoggedInUser();
 
-        if (!user.getRole().equals("ADMIN") &&
-                !user.getRole().equals("PHARMACY")) {
+        if (!"DELIVERY_PARTNER".equals(user.getRole())) {
+            throw new RuntimeException(
+                    "Only delivery partners can view available orders");
+        }
 
+        DeliveryPartner partner = getDeliveryPartner(user);
+
+        boolean isAvailable = deliveryPartnerRepository
+                .findByAvailableTrue()
+                .stream()
+                .anyMatch(p -> p.getId().equals(partner.getId()));
+
+        if (!isAvailable) {
+            throw new RuntimeException(
+                    "You must be available to accept orders");
+        }
+
+        return orderRepository.findAll()
+                .stream()
+                .filter(order ->
+                        "PLACED".equalsIgnoreCase(order.getStatus())
+                        && order.getDeliveryPartnerId() == null)
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+
+    // GET ALL ORDERS: ADMIN / PHARMACY
+    @GetMapping
+    public List<Order> getAllOrders() {
+        User user = getLoggedInUser();
+
+        if (!"ADMIN".equals(user.getRole())
+                && !"PHARMACY".equals(user.getRole())) {
             throw new RuntimeException(
                     "You are not allowed to view all orders");
         }
@@ -82,38 +104,26 @@ public class OrderController {
         return orderService.getAllOrders();
     }
 
-    // =========================================================
     // GET ORDER BY ID
-    // =========================================================
-
     @GetMapping("/{id}")
     public Order getOrderById(@PathVariable Long id) {
-
-        User loggedInUser = getLoggedInUser();
-
+        User user = getLoggedInUser();
         Order order = orderService.getOrderById(id);
 
         if (order == null) {
             throw new RuntimeException("Order not found");
         }
 
-        // ADMIN / PHARMACY
-        if (loggedInUser.getRole().equals("ADMIN") ||
-                loggedInUser.getRole().equals("PHARMACY")) {
-
+        if ("ADMIN".equals(user.getRole())
+                || "PHARMACY".equals(user.getRole())) {
             return order;
         }
 
-        // DELIVERY PARTNER
-        if (loggedInUser.getRole().equals("DELIVERY_PARTNER")) {
+        if ("DELIVERY_PARTNER".equals(user.getRole())) {
+            DeliveryPartner partner = getDeliveryPartner(user);
 
-            DeliveryPartner partner =
-                    getDeliveryPartner(loggedInUser);
-
-            if (order.getDeliveryPartnerId() == null ||
-                    !order.getDeliveryPartnerId()
-                            .equals(partner.getId())) {
-
+            if (order.getDeliveryPartnerId() == null
+                    || !order.getDeliveryPartnerId().equals(partner.getId())) {
                 throw new RuntimeException(
                         "You can view only orders assigned to you");
             }
@@ -121,10 +131,7 @@ public class OrderController {
             return order;
         }
 
-        // PATIENT
-        if (!loggedInUser.getId()
-                .equals(order.getUserId())) {
-
+        if (!user.getId().equals(order.getUserId())) {
             throw new RuntimeException(
                     "You can view only your own orders");
         }
@@ -132,33 +139,22 @@ public class OrderController {
         return order;
     }
 
-    // =========================================================
     // GET ORDERS BY USER
-    // =========================================================
-
     @GetMapping("/user/{userId}")
-    public List<Order> getOrdersByUser(
-            @PathVariable Long userId) {
+    public List<Order> getOrdersByUser(@PathVariable Long userId) {
+        User user = getLoggedInUser();
 
-        User loggedInUser = getLoggedInUser();
-
-        // ADMIN / PHARMACY
-        if (loggedInUser.getRole().equals("ADMIN") ||
-                loggedInUser.getRole().equals("PHARMACY")) {
-
+        if ("ADMIN".equals(user.getRole())
+                || "PHARMACY".equals(user.getRole())) {
             return orderService.getOrdersByUser(userId);
         }
 
-        // DELIVERY PARTNER
-        if (loggedInUser.getRole().equals("DELIVERY_PARTNER")) {
-
+        if ("DELIVERY_PARTNER".equals(user.getRole())) {
             throw new RuntimeException(
                     "Delivery partners must use assigned orders");
         }
 
-        // PATIENT
-        if (!loggedInUser.getId().equals(userId)) {
-
+        if (!user.getId().equals(userId)) {
             throw new RuntimeException(
                     "You can view only your own orders");
         }
@@ -166,54 +162,36 @@ public class OrderController {
         return orderService.getOrdersByUser(userId);
     }
 
-    // =========================================================
-    // TRACK ORDER BY TRACKING ID
-    // =========================================================
-
+    // TRACK ORDER
     @GetMapping("/track/{trackingId}")
-    public Order trackOrder(
-            @PathVariable String trackingId) {
-
-        User loggedInUser = getLoggedInUser();
-
-        List<Order> allOrders =
-                orderService.getAllOrders();
+    public Order trackOrder(@PathVariable String trackingId) {
+        User user = getLoggedInUser();
 
         Order matchingOrder = null;
 
-        for (Order order : allOrders) {
-
-            if (order.getTrackingId() != null &&
-                    order.getTrackingId()
-                            .equalsIgnoreCase(trackingId)) {
-
+        for (Order order : orderService.getAllOrders()) {
+            if (order.getTrackingId() != null
+                    && order.getTrackingId().equalsIgnoreCase(trackingId)) {
                 matchingOrder = order;
                 break;
             }
         }
 
         if (matchingOrder == null) {
-            throw new RuntimeException(
-                    "Tracking ID not found");
+            throw new RuntimeException("Tracking ID not found");
         }
 
-        // ADMIN / PHARMACY
-        if (loggedInUser.getRole().equals("ADMIN") ||
-                loggedInUser.getRole().equals("PHARMACY")) {
-
+        if ("ADMIN".equals(user.getRole())
+                || "PHARMACY".equals(user.getRole())) {
             return matchingOrder;
         }
 
-        // DELIVERY PARTNER
-        if (loggedInUser.getRole().equals("DELIVERY_PARTNER")) {
+        if ("DELIVERY_PARTNER".equals(user.getRole())) {
+            DeliveryPartner partner = getDeliveryPartner(user);
 
-            DeliveryPartner partner =
-                    getDeliveryPartner(loggedInUser);
-
-            if (matchingOrder.getDeliveryPartnerId() == null ||
-                    !matchingOrder.getDeliveryPartnerId()
+            if (matchingOrder.getDeliveryPartnerId() == null
+                    || !matchingOrder.getDeliveryPartnerId()
                             .equals(partner.getId())) {
-
                 throw new RuntimeException(
                         "You can track only orders assigned to you");
             }
@@ -221,10 +199,7 @@ public class OrderController {
             return matchingOrder;
         }
 
-        // PATIENT
-        if (!loggedInUser.getId()
-                .equals(matchingOrder.getUserId())) {
-
+        if (!user.getId().equals(matchingOrder.getUserId())) {
             throw new RuntimeException(
                     "You can track only your own order");
         }
@@ -232,235 +207,169 @@ public class OrderController {
         return matchingOrder;
     }
 
-    // =========================================================
-    // UPDATE ORDER STATUS
-    //
-    // PATIENT
-    //    ↓
-    // PLACED
-    //    ↓
-    // ADMIN / PHARMACY
-    //    ↓
-    // PROCESSING
-    //    ↓
-    // DISPATCH
-    //    ↓
-    // AUTO ASSIGN DELIVERY PARTNER
-    //    ↓
-    // DELIVERY PARTNER
-    //    ↓
-    // DELIVERED
-    // =========================================================
-
+    // ACCEPT OR UPDATE ORDER
     @PutMapping("/{id}/status")
+    @Transactional
     public Order updateOrderStatus(
             @PathVariable Long id,
             @RequestParam String status) {
 
-        User loggedInUser = getLoggedInUser();
+        User user = getLoggedInUser();
+        String role = user.getRole();
 
-        String role = loggedInUser.getRole();
-
-        // =====================================================
-        // ADMIN / PHARMACY
-        // =====================================================
-
-        if (role.equals("ADMIN") ||
-                role.equals("PHARMACY")) {
-
-            /*
-             * When ADMIN/PHARMACY dispatches the order,
-             * automatically find an available delivery partner.
-             */
-
-            if (status.equalsIgnoreCase("DISPATCHED")) {
-
-                Order order =
-                        orderService.getOrderById(id);
-
-                if (order == null) {
-
-                    throw new RuntimeException(
-                            "Order not found");
-                }
-
-                // Assign only when there is no partner yet.
-                if (order.getDeliveryPartnerId() == null) {
-
-                    DeliveryPartner partner =
-                            deliveryPartnerRepository
-                                    .findByAvailableTrue()
-                                    .stream()
-                                    .findFirst()
-                                    .orElseThrow(() ->
-                                            new RuntimeException(
-                                                    "No delivery partner is currently available"));
-
-                    // Assign partner
-                    order.setDeliveryPartnerId(
-                            partner.getId());
-
-                    order.setDeliveryPartner(
-                            partner.getName());
-
-                    order.setDeliveryPhone(
-                            partner.getPhone());
-
-                    /*
-                     * IMPORTANT:
-                     * Save assignment BEFORE OrderService
-                     * changes the order status.
-                     */
-                    orderRepository.save(order);
-
-                    /*
-                     * Partner is now carrying an active order.
-                     */
-                    partner.setAvailable(false);
-
-                    deliveryPartnerRepository.save(
-                            partner);
-                }
-            }
-
-            /*
-             * Now perform the normal status transition.
-             */
-            Order updatedOrder =
-                    orderService.updateOrderStatus(
-                            id,
-                            status);
-
-            /*
-             * Short ETA for project demonstration.
-             * Later this can be calculated from real GPS.
-             */
-            if (status.equalsIgnoreCase("DISPATCHED")) {
-
-                updatedOrder.setEstimatedDelivery(
-                        java.time.LocalDateTime.now()
-                                .plusMinutes(10)
-                                .toString());
-
-                updatedOrder =
-                        orderRepository.save(
-                                updatedOrder);
-            }
-
-            return updatedOrder;
+        if (status == null || status.isBlank()) {
+            throw new RuntimeException("Order status cannot be empty");
         }
 
-        // =====================================================
-        // DELIVERY PARTNER
-        // =====================================================
+        status = status.trim().toUpperCase();
 
-        if (role.equals("DELIVERY_PARTNER")) {
+        if (!"ADMIN".equals(role)
+                && !"PHARMACY".equals(role)
+                && !"DELIVERY_PARTNER".equals(role)) {
+            throw new RuntimeException(
+                    "You are not allowed to update this order");
+        }
 
-            DeliveryPartner partner =
-                    getDeliveryPartner(loggedInUser);
+        // The repository must provide findByIdForUpdate().
+        Order order = orderRepository.findByIdForUpdate(id)
+                .orElseThrow(() -> new RuntimeException("Order not found"));
 
-            Order order =
-                    orderService.getOrderById(id);
+        boolean isAdmin = "ADMIN".equals(role) || "PHARMACY".equals(role);
+        DeliveryPartner partner = null;
 
-            if (order == null) {
+        // ACCEPT: PLACED -> PROCESSING
+        if ("PROCESSING".equals(status)) {
 
+            if (!"PLACED".equalsIgnoreCase(order.getStatus())) {
                 throw new RuntimeException(
-                        "Order not found");
+                        "Only a PLACED order can be accepted");
             }
 
-            /*
-             * Delivery partner can only update
-             * orders assigned to that partner.
-             */
+            if (order.getDeliveryPartnerId() != null) {
+                throw new RuntimeException(
+                        "This order has already been assigned");
+            }
 
-            if (order.getDeliveryPartnerId() == null ||
-                    !order.getDeliveryPartnerId()
-                            .equals(partner.getId())) {
+            final DeliveryPartner acceptingPartner;
 
+            if ("DELIVERY_PARTNER".equals(role)) {
+                acceptingPartner = getDeliveryPartner(user);
+
+                // Check availability using the repository,
+                // avoiding a missing DeliveryPartner.getAvailable() method.
+                final Long acceptingPartnerId = acceptingPartner.getId();
+
+                boolean isAvailable = deliveryPartnerRepository
+                        .findByAvailableTrue()
+                        .stream()
+                        .anyMatch(p -> p.getId().equals(acceptingPartnerId));
+
+                if (!isAvailable) {
+                    throw new RuntimeException(
+                            "You are not currently available for deliveries");
+                }
+
+            } else {
+                acceptingPartner = deliveryPartnerRepository
+                        .findByAvailableTrue()
+                        .stream()
+                        .findFirst()
+                        .orElseThrow(() -> new RuntimeException(
+                                "No delivery partner is currently available"));
+            }
+
+            order.setDeliveryPartnerId(acceptingPartner.getId());
+            order.setDeliveryPartner(acceptingPartner.getName());
+            order.setDeliveryPhone(acceptingPartner.getPhone());
+
+            acceptingPartner.setAvailable(false);
+            deliveryPartnerRepository.save(acceptingPartner);
+            orderRepository.save(order);
+
+            return orderService.updateOrderStatus(id, status);
+        }
+
+        // LATER STATUS CHANGES
+        if ("DELIVERY_PARTNER".equals(role)) {
+            partner = getDeliveryPartner(user);
+
+            if (order.getDeliveryPartnerId() == null
+                    || !order.getDeliveryPartnerId().equals(partner.getId())) {
                 throw new RuntimeException(
                         "This order is not assigned to you");
             }
 
-            /*
-             * Delivery partner can only use
-             * valid delivery statuses.
-             */
-
-            if (!status.equals("PROCESSING") &&
-                    !status.equals("DISPATCHED") &&
-                    !status.equals("DELIVERED")) {
-
-                throw new RuntimeException(
-                        "Invalid delivery status");
+            if (!"DISPATCHED".equals(status)
+                    && !"DELIVERED".equals(status)) {
+                throw new RuntimeException("Invalid delivery status");
             }
 
-            Order updatedOrder =
-                    orderService.updateOrderStatus(
-                            id,
-                            status);
-
-            /*
-             * When delivered, make the partner available again.
-             */
-
-            if (status.equals("DELIVERED")) {
-
-                partner.setAvailable(true);
-
-                deliveryPartnerRepository.save(
-                        partner);
+        } else {
+            if (!"DISPATCHED".equals(status)
+                    && !"DELIVERED".equals(status)) {
+                throw new RuntimeException("Invalid order status");
             }
 
-            return updatedOrder;
+            // Assign an available partner when dispatching an older
+            // order that has not yet been assigned.
+            if ("DISPATCHED".equals(status)
+                    && order.getDeliveryPartnerId() == null) {
+
+                DeliveryPartner dispatchPartner = deliveryPartnerRepository
+                        .findByAvailableTrue()
+                        .stream()
+                        .findFirst()
+                        .orElseThrow(() -> new RuntimeException(
+                                "No delivery partner is currently available"));
+
+                order.setDeliveryPartnerId(dispatchPartner.getId());
+                order.setDeliveryPartner(dispatchPartner.getName());
+                order.setDeliveryPhone(dispatchPartner.getPhone());
+
+                dispatchPartner.setAvailable(false);
+                deliveryPartnerRepository.save(dispatchPartner);
+                orderRepository.save(order);
+            }
         }
 
-        // =====================================================
-        // OTHER ROLES
-        // =====================================================
+        Order updatedOrder = orderService.updateOrderStatus(id, status);
 
-        throw new RuntimeException(
-                "Only ADMIN, PHARMACY and assigned DELIVERY PARTNER can update order status");
+        if ("DELIVERED".equals(status)
+                && updatedOrder.getDeliveryPartnerId() != null) {
+
+            DeliveryPartner assignedPartner =
+                    deliveryPartnerRepository
+                            .findById(updatedOrder.getDeliveryPartnerId())
+                            .orElse(null);
+
+            if (assignedPartner != null) {
+                assignedPartner.setAvailable(true);
+                deliveryPartnerRepository.save(assignedPartner);
+            }
+        }
+
+        return updatedOrder;
     }
 
-    // =========================================================
     // GET LOGGED-IN USER
-    // =========================================================
-
     private User getLoggedInUser() {
-
         Authentication authentication =
-                SecurityContextHolder
-                        .getContext()
-                        .getAuthentication();
+                SecurityContextHolder.getContext().getAuthentication();
 
-        if (authentication == null ||
-                !authentication.isAuthenticated()) {
-
-            throw new RuntimeException(
-                    "Authentication required");
+        if (authentication == null || !authentication.isAuthenticated()) {
+            throw new RuntimeException("Authentication required");
         }
 
-        String email =
-                authentication.getName();
+        String email = authentication.getName();
 
-        return userRepository
-                .findByEmail(email)
-                .orElseThrow(() ->
-                        new RuntimeException(
-                                "User not found"));
+        return userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("User not found"));
     }
 
-    // =========================================================
     // GET DELIVERY PARTNER PROFILE
-    // =========================================================
-
-    private DeliveryPartner getDeliveryPartner(
-            User user) {
-
-        return deliveryPartnerRepository
-                .findByEmail(user.getEmail())
-                .orElseThrow(() ->
-                        new RuntimeException(
-                                "Delivery partner profile not found"));
+    private DeliveryPartner getDeliveryPartner(User user) {
+        return deliveryPartnerRepository.findByEmail(user.getEmail())
+                .orElseThrow(() -> new RuntimeException(
+                        "Delivery partner profile not found"));
     }
 }

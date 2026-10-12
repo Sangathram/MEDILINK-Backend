@@ -243,6 +243,19 @@ public class SecurityConfig {
                         "/api/delivery-partner/**"
                 ).hasRole("DELIVERY_PARTNER")
 
+                // =================================================
+// DELIVERY PARTNERS MANAGEMENT
+// =================================================
+
+// Only ADMIN can manage delivery partner accounts
+.requestMatchers(
+        "/api/delivery-partners",
+        "/api/delivery-partners/**"
+).hasRole("ADMIN")
+
+
+
+
                 // IMPORTANT:
                 // Only ADMIN + PHARMACY can assign delivery partners.
                 .requestMatchers(
